@@ -113,6 +113,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);min-height:1
 .s-maturing  {background:var(--c-maturing);border-color:#4da06a; color:var(--c-maturing-t);}
 .s-turndue   {background:var(--c-turndue); border-color:#d4a020; color:var(--c-turndue-t);}
 .s-turning   {background:var(--c-turning); border-color:#c07030; color:var(--c-turning-t);}
+.s-turning-dest{background:var(--c-turning); border-color:#c07030; color:var(--c-turning-t);}
 .s-postturn  {background:var(--c-postturn);border-color:#3a8ab4; color:var(--c-postturn-t);}
 .s-ready     {background:var(--c-ready);   border-color:#28a05a; color:var(--c-ready-t);}
 .s-emptying  {background:var(--c-emptying);border-color:#8060c0; color:var(--c-emptying-t);}
@@ -553,9 +554,10 @@ const fmtShort=d=>d?new Date(d+'T12:00:00').toLocaleDateString('en-GB',{day:'num
 // ── Status engine ──
 function getStatus(b){
   if(b.inProgress){
-    if(b.inProgress.type==='filling')  return 'filling';
-    if(b.inProgress.type==='turning')  return 'turning';
-    if(b.inProgress.type==='emptying') return 'emptying';
+    if(b.inProgress.type==='filling')      return 'filling';
+    if(b.inProgress.type==='turning')      return 'turning';
+    if(b.inProgress.type==='turning-dest') return 'turning-dest'; // bay receiving a turn — was falling through to 'empty' below, showing as "Empty / Available" while locked
+    if(b.inProgress.type==='emptying')     return 'emptying';
   }
   if(!b.filledDate) return 'empty';
   if(!b.filledComplete) return 'filling'; // legacy safety
@@ -570,12 +572,12 @@ function getStatus(b){
 
 const STATUS_LABEL={
   'empty':'Empty','filling':'Being filled','maturing':'Maturing',
-  'turn-due':'Turn due','turning':'Being turned','post-turn':'Post-turn',
+  'turn-due':'Turn due','turning':'Being turned','turning-dest':'Receiving turn','post-turn':'Post-turn',
   'ready':'Ready','emptying':'Being emptied'
 };
 const STATUS_ICON={
   'empty':'○','filling':'◑','maturing':'◉','turn-due':'⚠',
-  'turning':'↻','post-turn':'◉','ready':'✓','emptying':'◑'
+  'turning':'↻','turning-dest':'↻','post-turn':'◉','ready':'✓','emptying':'◑'
 };
 const STATUS_COLOR={
   'empty':    {bg:'var(--c-empty)',   text:'var(--c-empty-t)',   prog:'#9a9690'},
@@ -583,6 +585,7 @@ const STATUS_COLOR={
   'maturing': {bg:'var(--c-maturing)',text:'var(--c-maturing-t)',prog:'#22c55e'},
   'turn-due': {bg:'var(--c-turndue)', text:'var(--c-turndue-t)', prog:'#f59e0b'},
   'turning':  {bg:'var(--c-turning)', text:'var(--c-turning-t)', prog:'#f97316'},
+  'turning-dest':{bg:'var(--c-turning)',text:'var(--c-turning-t)',prog:'#f97316'},
   'post-turn':{bg:'var(--c-postturn)',text:'var(--c-postturn-t)',prog:'#3b82f6'},
   'ready':    {bg:'var(--c-ready)',   text:'var(--c-ready-t)',   prog:'#16a34a'},
   'emptying': {bg:'var(--c-emptying)',text:'var(--c-emptying-t)',prog:'#8b5cf6'},
@@ -790,6 +793,10 @@ function progInfo(b,s){
     const d=daysSince(b.inProgress?.since)||0;
     return{label:'Turn in progress',detail:`Started ${d} day${d!==1?'s':''} ago`,pct:100,cls:'pf-amber',stripe:true};
   }
+  if(s==='turning-dest'){
+    const d=daysSince(b.inProgress?.since)||0;
+    return{label:'Receiving turn',detail:`Started ${d} day${d!==1?'s':''} ago`,pct:100,cls:'pf-amber',stripe:true};
+  }
   if(s==='emptying'){
     const d=daysSince(b.inProgress?.since)||0;
     return{label:'Emptying in progress',detail:`Started ${d} day${d!==1?'s':''} ago`,pct:100,cls:'pf-purple',stripe:true};
@@ -899,6 +906,7 @@ function renderVisualiser(){
     if(s==='empty')   detail='Available';
     else if(s==='filling') { days=(daysSince(b.inProgress?.since)||0)+'d'; detail='Filling…'; }
     else if(s==='turning') { days=(daysSince(b.inProgress?.since)||0)+'d'; detail='Turning…'; }
+    else if(s==='turning-dest'){ days=(daysSince(b.inProgress?.since)||0)+'d'; detail='Receiving…'; }
     else if(s==='emptying'){ days=(daysSince(b.inProgress?.since)||0)+'d'; detail='Emptying…'; }
     else if(s==='maturing'){ days=dFill+'d in'; const rem=28-dFill; detail=`Turn in ${rem}d`; }
     else if(s==='turn-due'){ days=dFill+'d in'; detail='Turn now!'; }
