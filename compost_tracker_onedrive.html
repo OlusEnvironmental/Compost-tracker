@@ -413,6 +413,39 @@ async function ensureFolder(token) {
   }
 }
 
+// Tracks the SharePoint file's eTag (from the driveItem JSON metadata, a
+// documented core field - not an HTTP response header) as of our last
+// successful load/save. Used only as a best-effort pre-save check in
+// saveToOneDrive() below: not as an If-Match condition on the write itself.
+// Microsoft's docs for the plain "upload/replace content" endpoint this app
+// uses only list Authorization/Content-Type as supported request headers -
+// If-Match is documented for the separate driveItem-metadata PATCH endpoint,
+// not confirmed for this one. Given this system holds live data in daily
+// use, risking every single save failing outright on an unverified header
+// isn't an acceptable trade for a smaller conflict-detection window, so the
+// actual write call below is untouched from before this change - same
+// headers, same body, same behaviour on the happy path.
+var _lastETag = null;
+
+// Lightweight metadata-only lookup (no file content transferred) of the
+// tracker file's current eTag, using the same by-path URL pattern already
+// proven working by ensureFolder() above. Returns: the eTag string; null if
+// the file doesn't exist (404 - nothing to conflict with); or undefined if
+// the check itself failed (network hiccup etc) - callers should treat
+// undefined as "couldn't check" and not block on it.
+async function getRemoteETag(token) {
+  try {
+    var r = await fetch('https://graph.microsoft.com/v1.0/sites/'+SP_SITE+'/drive/root:/'+OD_FOLDER+'/'+OD_FILE+':',
+      {headers:{Authorization:'Bearer '+token}});
+    if (r.status === 404) return null;
+    if (!r.ok) return undefined;
+    var meta = await r.json();
+    return meta.eTag || undefined;
+  } catch(e) {
+    return undefined;
+  }
+}
+
 async function loadFromOneDrive() {
   var token = await getToken();
   if (!token) return null;
@@ -420,9 +453,11 @@ async function loadFromOneDrive() {
     setSyncStatus('syncing','Loading...');
     var r = await fetch('https://graph.microsoft.com/v1.0/sites/'+SP_SITE+'/drive/root:/'+OD_FOLDER+'/'+OD_FILE+':/content',
       {headers:{Authorization:'Bearer '+token}});
-    if (r.status === 404) { setSyncStatus('synced','Ready'); return {bays:[],log:[]}; }
+    if (r.status === 404) { setSyncStatus('synced','Ready'); _lastETag = null; return {bays:[],log:[]}; }
     if (!r.ok) throw new Error('HTTP '+r.status);
     var d = await r.json();
+    var tag = await getRemoteETag(token);
+    _lastETag = (tag === undefined) ? null : tag; // best-effort baseline; a failed check just means we skip the pre-save comparison later, same as never having a baseline
     setSyncStatus('synced','Loaded from OneDrive');
     return d;
   } catch(e) {
@@ -438,12 +473,34 @@ async function saveToOneDrive() {
   try {
     setSyncStatus('syncing','Saving...');
     await ensureFolder(token);
+
+    // Best-effort conflict check before writing: if we have a baseline
+    // eTag from our last load/save, compare it to what's actually on the
+    // server right now. This only catches conflicts that happened before
+    // this check runs - there's still a small window between the check and
+    // the write below where another device could save in between, same as
+    // always. It trades a smaller (not zero) race window for not touching
+    // the write call itself at all - see the note on _lastETag above for
+    // why an If-Match-on-write approach wasn't used instead.
+    if (_lastETag) {
+      var remoteTag = await getRemoteETag(token);
+      if (remoteTag && remoteTag !== _lastETag) {
+        console.warn('[Sync] Conflict detected before save - remote data has changed since last load');
+        setSyncStatus('error','Someone else has saved changes - reload the page to see them, then redo your last action');
+        alert('This bay tracker was updated by someone else since you last loaded it.\n\nYour last change was NOT saved to the shared copy (it is still visible to you, just not synced) so nothing is lost - but please reload the page now to see the latest data before doing anything else.');
+        return;
+      }
+    }
+
     var r = await fetch('https://graph.microsoft.com/v1.0/sites/'+SP_SITE+'/drive/root:/'+OD_FOLDER+'/'+OD_FILE+':/content', {
       method:'PUT',
       headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
       body: JSON.stringify(data)
     });
     if (!r.ok) throw new Error('HTTP '+r.status);
+    var saved = await r.json().catch(()=>null);
+    var newTag = saved && saved.eTag;
+    _lastETag = newTag || (await getRemoteETag(token)) || _lastETag;
     var t = new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
     setSyncStatus('synced','Saved to OneDrive '+t);
   } catch(e) {
@@ -489,6 +546,7 @@ async function signOut() {
     await msalInstance.logoutPopup({account:currentAccount});
     currentAccount = null;
     data = {bays:[],log:[]};
+    _lastETag = null;
     showSignIn();
   } catch(e) { console.error('Sign out error',e); }
 }
