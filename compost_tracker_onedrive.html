@@ -446,6 +446,19 @@ async function getRemoteETag(token) {
   }
 }
 
+// Distinguishes "this browser has never actually been used for anything"
+// from "this browser has real bay data" - a fresh install auto-seeds 8
+// empty placeholder bays into localStorage (see the bottom of this file)
+// *before sign-in even happens*, so merely checking "are there any bays at
+// all" would treat every brand-new device as having real data. Only
+// something beyond that untouched seed state counts.
+function looksLikeRealLocalData(d) {
+  if (!d) return false;
+  if (d.bays && d.bays.some(function(b){ return b.filledDate || b.turnedDate || b.inProgress; })) return true;
+  if (d.log && d.log.some(function(l){ return !(l.type === 'added' && l.notes === SEED_LOG_NOTE); })) return true;
+  return false;
+}
+
 async function loadFromOneDrive() {
   var token = await getToken();
   if (!token) return null;
@@ -453,7 +466,27 @@ async function loadFromOneDrive() {
     setSyncStatus('syncing','Loading...');
     var r = await fetch('https://graph.microsoft.com/v1.0/sites/'+SP_SITE+'/drive/root:/'+OD_FOLDER+'/'+OD_FILE+':/content',
       {headers:{Authorization:'Bearer '+token}});
-    if (r.status === 404) { setSyncStatus('synced','Ready'); _lastETag = null; return {bays:[],log:[]}; }
+    if (r.status === 404) {
+      _lastETag = null;
+      // A 404 here should only ever mean "the tracker file has genuinely
+      // never been created" - fine, and expected, on a device that has
+      // never held real data either. But if THIS device's own local cache
+      // has real data already, a 404 is suspicious: the server no longer
+      // has the file we think it has (deleted, renamed, moved, or some
+      // transient path issue), and blindly treating that as "start empty"
+      // would let the very next save() push that emptiness over the real
+      // data. In that case, don't touch `data` at all - same as a load
+      // failure below - and surface a clear warning instead.
+      var existing = load();
+      if (looksLikeRealLocalData(existing)) {
+        console.warn('[Sync] Server has no tracker file, but this device has real local data - keeping the local copy rather than wiping it');
+        setSyncStatus('error','Cloud copy not found - kept this device’s local data instead of clearing it. Check with someone else before continuing');
+        alert('The shared bay tracker file could not be found on SharePoint, but this device has real bay data saved locally.\n\nTo avoid wiping that data, nothing has been changed or synced. Please check with someone else / IT before doing anything else, in case the shared file has been moved or deleted.');
+        return null;
+      }
+      setSyncStatus('synced','Ready');
+      return {bays:[],log:[]};
+    }
     if (!r.ok) throw new Error('HTTP '+r.status);
     var d = await r.json();
     var tag = await getRemoteETag(token);
@@ -597,6 +630,12 @@ window.addEventListener('load', function(){ initAuth(); });
    status: empty | filling | maturing | turn-due | turning | post-turn | ready | emptying
 ════════════════════════════════════════ */
 const SK = 'compost_v4';
+// Text of the one-time system log entry written by the bottom-of-file
+// "pre-populate 8 bays if empty" block. Shared with loadFromOneDrive()'s
+// 404 handling above, which needs to tell "this device has never been used
+// for anything real yet" apart from "this device has genuine data" - see
+// looksLikeRealLocalData().
+const SEED_LOG_NOTE = 'Initialised with 8 bays (A–H)';
 function load(){try{return JSON.parse(localStorage.getItem(SK))||{bays:[],log:[]};}catch(e){return{bays:[],log:[]};}}
 function save(){localStorage.setItem(SK,JSON.stringify(data));saveToOneDrive();}
 let data = load();
@@ -1178,7 +1217,7 @@ if(!data.bays.length){
   'ABCDEFGH'.split('').forEach(l=>{
     data.bays.push({id:'bay_'+l,name:'Bay '+l,filledDate:null,filledComplete:false,turnedDate:null,turnedComplete:false,emptyStartDate:null,emptyComplete:false,notes:'',inProgress:null});
   });
-  addLog('','System','added','Initialised with 8 bays (A–H)');
+  addLog('','System','added',SEED_LOG_NOTE);
   save();
 }
 
