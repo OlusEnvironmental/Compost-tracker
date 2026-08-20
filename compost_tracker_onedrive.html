@@ -1196,12 +1196,60 @@ function exportStatusCSV(){dlCSV(statusCSVData(),`compost-status-${today()}.csv`
 function exportLogCSV(){dlCSV(logCSVData(),`compost-log-${today()}.csv`);}
 function copyStatusCSV(){cpCSV(statusCSVData());}
 function copyLogCSV(){cpCSV(logCSVData());}
-function exportJSON(){const a=document.createElement('a');a.href='data:application/json;charset=utf-8,'+encodeURIComponent(JSON.stringify(data,null,2));a.download=`compost-backup-${today()}.json`;a.click();}
+function exportJSON(){downloadBackupJSON(data,'manual');}
+function downloadBackupJSON(d,label){const a=document.createElement('a');a.href='data:application/json;charset=utf-8,'+encodeURIComponent(JSON.stringify(d,null,2));a.download=`compost-backup-${label}-${today()}.json`;a.click();}
+function escHtml(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+
+// Checks the parsed file looks like an actual bay-tracker backup (not just
+// "has a bays and log key", which let almost anything through before -
+// checks both are arrays, and that every bay at least has the id/name
+// fields everything else in this file relies on. Returns an error string,
+// or null if the file looks OK.
+function validateRestoreData(d){
+  if(!d||typeof d!=='object') return 'File does not contain a valid backup.';
+  if(!Array.isArray(d.bays)) return 'File is missing a valid "bays" list.';
+  if(!Array.isArray(d.log)) return 'File is missing a valid "log" list.';
+  for(const b of d.bays){
+    if(!b||typeof b!=='object'||typeof b.id!=='string'||typeof b.name!=='string'){
+      return 'One or more bays in the file are missing an id/name - this doesn\'t look like a bay tracker backup.';
+    }
+  }
+  return null;
+}
+
+let _pendingRestore=null;
 function restoreJSON(inp){
   const f=inp.files[0];if(!f)return;
   const r=new FileReader();
-  r.onload=e=>{try{const d=JSON.parse(e.target.result);if(d.bays&&d.log){if(confirm('Replace all current data?')){data=d;save();renderAll();alert('Restored.');}}else{alert('Invalid file.');}}catch{alert('Could not read file.');}};
+  r.onload=e=>{
+    let d;
+    try{ d=JSON.parse(e.target.result); }catch{ alert('Could not read file - not valid JSON.'); return; }
+    const err=validateRestoreData(d);
+    if(err){ alert(err); return; }
+
+    const nowBays=data.bays.length, nowLog=data.log.length;
+    const nowInProgress=data.bays.filter(b=>b.inProgress).length;
+    showModal(`<h2>Restore backup?</h2>
+      <p style="font-size:13px;color:var(--text2);margin-bottom:10px;">This replaces ALL current data - for everyone, once it syncs - with the contents of "${escHtml(f.name)}".</p>
+      <div style="font-size:13px;background:#f8f7f4;border:1px solid #e5e0d5;border-radius:8px;padding:10px 12px;margin-bottom:10px;">
+        <div><strong>Current data:</strong> ${nowBays} bay${nowBays!==1?'s':''}, ${nowLog} log entr${nowLog!==1?'ies':'y'}</div>
+        <div><strong>In this file:</strong> ${d.bays.length} bay${d.bays.length!==1?'s':''}, ${d.log.length} log entr${d.log.length!==1?'ies':'y'}</div>
+      </div>
+      ${nowInProgress?`<p style="font-size:13px;color:#b91c1c;margin-bottom:10px;"><strong>Warning:</strong> ${nowInProgress} bay${nowInProgress!==1?'s are':' is'} currently in progress (filling/turning/emptying) right now. Restoring will discard that.</p>`:''}
+      <p style="font-size:13px;color:var(--text2);margin-bottom:14px;">A backup of the CURRENT data will download automatically before restoring, so this can be undone.</p>
+      <div class="modal-actions"><button class="btn" onclick="_pendingRestore=null;closeModal()">Cancel</button><button class="btn btn-red" onclick="confirmRestoreJSON()">Restore backup</button></div>`);
+    _pendingRestore=d;
+  };
   r.readAsText(f);
+  inp.value=''; // so selecting the same filename again still fires onchange
+}
+function confirmRestoreJSON(){
+  if(!_pendingRestore){ closeModal(); return; }
+  downloadBackupJSON(data,'before-restore'); // safety net, always taken right before the overwrite below
+  data=_pendingRestore;
+  _pendingRestore=null;
+  save();renderAll();closeModal();
+  alert('Restored. A backup of your previous data was downloaded automatically before the restore.');
 }
 
 function renderAll(){
