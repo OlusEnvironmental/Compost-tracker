@@ -92,12 +92,13 @@ Severity here means "how bad if it happens" combined with "how likely in normal 
 
 Remaining items, from least to most invasive:
 
-1. Add `min`/basic sanity checks to the date inputs.
-2. Prevent bay-name collisions at `confirmAddBay`.
+1. ~~Add `min`/basic sanity checks to the date inputs.~~ **Fixed 21 Aug 2026** (`24b74a8`) — a shared `readValidDate()` guard rejects blank/future dates and (for completing a turn) a completion date before the turn's start; date pickers also capped at today.
+2. ~~Prevent bay-name collisions at `confirmAddBay`.~~ **Fixed 21 Aug 2026** (`24b74a8`) — duplicate names (case/space-insensitive) are now rejected.
 3. Revisit the `confirmDelete` mid-lifecycle case — genuinely useful protection here likely means closing the cross-device staleness window further (more frequent/targeted re-sync, or a re-check immediately before the delete itself goes through) rather than a guard inside `confirmDelete` alone, which can't see past this device's own stale view of the world. Low urgency: the UI already blocks the straightforward single-device path to this.
 4. Close the remaining "no periodic background re-sync" gap properly, if it keeps mattering in practice — the pre-save conflict check (commit `d5ba0c6`) narrows the window but a device can still sit on a stale view for a full session between loads.
 
 ## Changelog
 
 - **2026-08-20** — Completed the Phase 1 as-is audit and wrote this document (previously no documentation existed for this system).
+- **2026-08-21** — Non-urgent cleanup pass (`24b74a8`): added date-input sanity checks (`readValidDate()` + `max=today` on the pickers) and a duplicate-bay-name guard at `confirmAddBay`, both from the 'Left open' list. No change to the sync/storage path. Verified: app script passes `node --check`; date/collision logic unit-tested.
 - **2026-08-20** — Fixed all four originally agreed findings, one at a time with a check-in on each given this system's live-data status: the `turning-dest` status-badge display bug (`bb9ad5f`), a pre-save conflict check against concurrent SharePoint edits (`d5ba0c6`), the 404-on-load silent data wipe — the audit's highest-severity finding (`5922512`), and `restoreJSON` hardening with validation/preview/auto-backup (`e13621c`). The mid-lifecycle delete finding was re-assessed during implementation and found to be already blocked at the UI level for the single-device case described in the original audit — the Remove button only ever renders on an empty, unlocked bay; left open pending a proper fix for the underlying cross-device staleness window instead (see "Left open, deliberately"). Deployment verified live via the GitHub Pages site after each push; full end-to-end sync verification against live SharePoint wasn't possible from automated tooling (silent-auth fallback doesn't complete in that context — a known, pre-existing low-severity gap, not a regression) so a manual spot-check by a signed-in user is still worthwhile.
