@@ -645,6 +645,17 @@ const today=()=>new Date().toISOString().split('T')[0];
 const daysBetween=(a,b)=>Math.floor((new Date(b+'T12:00:00')-new Date(a+'T12:00:00'))/86400000);
 const daysSince=d=>d?daysBetween(d,today()):null;
 const addDays=(d,n)=>{const dt=new Date(d+'T12:00:00');dt.setDate(dt.getDate()+n);return dt.toISOString().split('T')[0];};
+// Validates a date entered in a modal: must be present, not in the future, and
+// (if minDate given) not before it. Returns the value, or null after alerting
+// (caller returns without saving, leaving the modal open to correct it).
+function readValidDate(minDate){
+  const el=document.getElementById('m-date');
+  const d=el?el.value:'';
+  if(!d){ alert('Please enter a date.'); return null; }
+  if(d>today()){ alert('That date is in the future \u2014 please check it.'); return null; }
+  if(minDate && d<minDate){ alert('That date is before the start date ('+fmtDate(minDate)+') \u2014 please check it.'); return null; }
+  return d;
+}
 const fmtDate=d=>d?new Date(d+'T12:00:00').toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}):'—';
 const fmtShort=d=>d?new Date(d+'T12:00:00').toLocaleDateString('en-GB',{day:'numeric',month:'short'}):'—';
 
@@ -724,6 +735,7 @@ function openAddBay(){
 function confirmAddBay(){
   const name=(document.getElementById('m-name').value||'').trim();
   if(!name)return;
+  if(data.bays.some(b=>(b.name||'').trim().toLowerCase()===name.toLowerCase())){ alert('A bay called "'+name+'" already exists \u2014 choose a different name.'); return; }
   data.bays.push({id:'bay_'+Date.now(),name,filledDate:null,filledComplete:false,turnedDate:null,turnedComplete:false,emptyStartDate:null,emptyComplete:false,notes:'',inProgress:null});
   addLog('',name,'added','Bay created');
   save();closeModal();renderAll();
@@ -735,13 +747,13 @@ function startFill(bayId){
   showModal(`<h2>Start filling bay</h2>
     <p style="font-size:13px;color:var(--text2);margin-bottom:14px;">Log when filling begins. Confirm completion when the bay is full.</p>
     <div class="fg"><label>Batch number</label><input id="m-batch" type="text" value="${nextBatch}" placeholder="e.g. B001"/></div>
-    <div class="fg"><label>Date started</label><input id="m-date" type="date" value="${today()}"/></div>
+    <div class="fg"><label>Date started</label><input id="m-date" type="date" value="${today()}" max="${today()}"/></div>
     <div class="fg"><label>Contents / notes (optional)</label><textarea id="m-notes" placeholder="e.g. garden waste, kitchen scraps…"></textarea></div>
     <div class="modal-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-blue" onclick="confirmStartFill('${bayId}')">Start filling</button></div>`);
 }
 function confirmStartFill(bayId){
   const b=data.bays.find(x=>x.id===bayId);
-  const d=document.getElementById('m-date').value;
+  const d=readValidDate(); if(!d)return;
   const n=document.getElementById('m-notes').value;
   const batch=(document.getElementById('m-batch').value||'').trim();
   b.inProgress={type:'filling',since:d,notes:n};
@@ -756,7 +768,7 @@ function completeFill(bayId){
   const b=data.bays.find(x=>x.id===bayId);
   showModal(`<h2>Confirm bay ${b.name} filled</h2>
     <p style="font-size:13px;color:var(--text2);margin-bottom:14px;">Mark filling as complete. The 28-day maturation timer will start from the original fill date.</p>
-    <div class="fg"><label>Date completed</label><input id="m-date" type="date" value="${today()}"/></div>
+    <div class="fg"><label>Date completed</label><input id="m-date" type="date" value="${today()}" max="${today()}"/></div>
     <div class="fg"><label>Notes (optional)</label><input id="m-notes" type="text" placeholder="e.g. topped up with brown material…"/></div>
     <div class="modal-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-confirm" onclick="confirmCompleteFill('${bayId}')">&#10003; Confirm filled</button></div>`);
 }
@@ -779,13 +791,13 @@ function startTurn(bayId){
   showModal(`<h2>Start turning bay</h2>
     <p style="font-size:13px;color:var(--text2);margin-bottom:14px;">The compost will be moved to an empty bay. Confirm completion when the move is finished.</p>
     <div class="fg"><label>Move into bay</label><select id="m-target">${opts}</select></div>
-    <div class="fg"><label>Date started</label><input id="m-date" type="date" value="${today()}"/></div>
+    <div class="fg"><label>Date started</label><input id="m-date" type="date" value="${today()}" max="${today()}"/></div>
     <div class="fg"><label>Notes (optional)</label><input id="m-notes" type="text" placeholder="e.g. added bulking material…"/></div>
     <div class="modal-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-amber" onclick="confirmStartTurn('${bayId}')">Start turn</button></div>`);
 }
 function confirmStartTurn(fromId){
   const targetId=document.getElementById('m-target').value;
-  const d=document.getElementById('m-date').value;
+  const d=readValidDate(); if(!d)return;
   const n=document.getElementById('m-notes').value;
   const from=data.bays.find(b=>b.id===fromId);
   const to=data.bays.find(b=>b.id===targetId);
@@ -803,7 +815,7 @@ function completeTurn(bayId){
   const to=data.bays.find(x=>x.id===targetId);
   showModal(`<h2>Confirm turn complete</h2>
     <p style="font-size:13px;color:var(--text2);margin-bottom:14px;">Bay <strong>${b.name}</strong> → <strong>${to?to.name:'target bay'}</strong>. The 21-day post-turn timer will start from today.</p>
-    <div class="fg"><label>Date completed</label><input id="m-date" type="date" value="${today()}"/></div>
+    <div class="fg"><label>Date completed</label><input id="m-date" type="date" value="${today()}" max="${today()}"/></div>
     <div class="fg"><label>Notes (optional)</label><input id="m-notes" type="text" placeholder="any observations…"/></div>
     <div class="modal-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-confirm" onclick="confirmCompleteTurn('${bayId}')">&#10003; Confirm turned</button></div>`);
 }
@@ -811,7 +823,7 @@ function confirmCompleteTurn(fromId){
   const from=data.bays.find(b=>b.id===fromId);
   const targetId=from.inProgress?.targetId;
   const to=data.bays.find(b=>b.id===targetId);
-  const d=document.getElementById('m-date').value;
+  const d=readValidDate(from.inProgress?.since); if(!d)return;
   const n=document.getElementById('m-notes').value;
   if(to){
     to.filledDate=from.filledDate; to.filledComplete=true;
@@ -831,13 +843,13 @@ function startEmpty(bayId){
   const b=data.bays.find(x=>x.id===bayId);
   showModal(`<h2>Start emptying bay ${b.name}</h2>
     <p style="font-size:13px;color:var(--text2);margin-bottom:14px;">Log when emptying begins. Confirm when the bay is fully cleared.</p>
-    <div class="fg"><label>Date started</label><input id="m-date" type="date" value="${today()}"/></div>
+    <div class="fg"><label>Date started</label><input id="m-date" type="date" value="${today()}" max="${today()}"/></div>
     <div class="fg"><label>Notes (optional)</label><input id="m-notes" type="text" placeholder="e.g. dispatching to raised beds…"/></div>
     <div class="modal-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-purple" onclick="confirmStartEmpty('${bayId}')">Start emptying</button></div>`);
 }
 function confirmStartEmpty(bayId){
   const b=data.bays.find(x=>x.id===bayId);
-  const d=document.getElementById('m-date').value;
+  const d=readValidDate(); if(!d)return;
   const n=document.getElementById('m-notes').value;
   b.inProgress={type:'emptying',since:d,notes:n};
   addLog(bayId,b.name,'empty-start',n);
@@ -849,7 +861,7 @@ function completeEmpty(bayId){
   const b=data.bays.find(x=>x.id===bayId);
   showModal(`<h2>Confirm bay ${b.name} emptied</h2>
     <p style="font-size:13px;color:var(--text2);margin-bottom:14px;">The bay will be marked empty and available for the next batch.</p>
-    <div class="fg"><label>Date completed</label><input id="m-date" type="date" value="${today()}"/></div>
+    <div class="fg"><label>Date completed</label><input id="m-date" type="date" value="${today()}" max="${today()}"/></div>
     <div class="fg"><label>Notes (optional)</label><input id="m-notes" type="text" placeholder="e.g. approx volume, destination…"/></div>
     <div class="modal-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-confirm" onclick="confirmCompleteEmpty('${bayId}')">&#10003; Confirm emptied</button></div>`);
 }
