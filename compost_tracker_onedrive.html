@@ -355,7 +355,7 @@ var MSAL_CONFIG = {
   auth: {
     clientId: 'cdfb14bf-172f-4569-841c-b2532548c898',
     authority: 'https://login.microsoftonline.com/6352d712-2ca3-498d-afa8-d2e977142204',
-    redirectUri: 'https://olusenvironmental.github.io/Compost-tracker/compost_tracker_onedrive.html'
+    redirectUri: window.location.origin + window.location.pathname  // matches whatever URL the app is served from (github.io now, baytracker.olus.co.uk later); register each in Entra
   },
   cache: { cacheLocation: 'localStorage', storeAuthStateInCookie: false }
 };
