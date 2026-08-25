@@ -393,12 +393,38 @@ async function getToken() {
     var r = await msalInstance.acquireTokenSilent({scopes:SCOPES,account:currentAccount});
     return r.accessToken;
   } catch(e) {
-    try {
-      var r2 = await msalInstance.acquireTokenPopup({scopes:SCOPES});
-      currentAccount = r2.account;
-      return r2.accessToken;
-    } catch(e2) { return null; }
+    // A silent-renew failure that needs interaction means the Microsoft session
+    // has genuinely expired -> surface the central "logged out" popup instead of
+    // silently leaving stale cached data on screen behind a small status chip.
+    if (isInteractionRequired(e)) { sessionExpired(); return null; }
+    // Otherwise it's transient (e.g. offline) -> stay in local mode.
+    return null;
   }
+}
+
+var _sessionExpired = false;
+function isInteractionRequired(e){
+  if(!e) return false;
+  if(e.name === 'InteractionRequiredAuthError') return true;
+  var c = ((e.errorCode || '') + '').toLowerCase();
+  return c.indexOf('interaction_required')>=0 || c.indexOf('login_required')>=0
+      || c.indexOf('consent_required')>=0 || c.indexOf('no_account')>=0
+      || c.indexOf('no_tokens')>=0;
+}
+function sessionExpired(){
+  if(_sessionExpired) return;
+  _sessionExpired = true;
+  currentAccount = null;
+  _lastETag = null;
+  showSignIn();  // hide all pages + any stale cached data behind the prompt
+  showModal(`<h2>You have been logged out</h2>
+    <p style="font-size:13px;color:var(--text2);margin:10px 0 20px;">Your Microsoft session has timed out. Please log back in to continue \u2014 your saved data is safe.</p>
+    <div class="modal-actions"><button class="btn btn-dark" onclick="retryLogin()" style="padding:10px 28px;font-size:14px;">Log in</button></div>`);
+}
+function retryLogin(){
+  closeModal();
+  _sessionExpired = false;
+  signIn();
 }
 
 async function ensureFolder(token) {
@@ -591,6 +617,7 @@ async function signOut() {
 }
 
 async function onSignedIn() {
+  _sessionExpired = false;
   var name = currentAccount.name || currentAccount.username;
   var initials = name.split(' ').map(function(n){return n[0]||'';}).join('').toUpperCase().slice(0,2);
   var el = function(id){return document.getElementById(id);};
@@ -618,6 +645,7 @@ function showSignIn() {
 }
 
 function showApp() {
+  if (_sessionExpired) return;
   var el = function(id){return document.getElementById(id);};
   if(el('signin-screen')) el('signin-screen').style.display = 'none';
   document.querySelectorAll('.page').forEach(function(p){p.style.display='';});
