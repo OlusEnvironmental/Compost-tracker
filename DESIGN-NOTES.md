@@ -1,5 +1,13 @@
 # Compost Bay Tracker — Design Notes
 
+## Current state at a glance
+- **Live:** https://baytracker.olus.co.uk  (served from GitHub Pages: `https://olusenvironmental.github.io/Compost-tracker/compost_tracker_onedrive.html`)
+- **Repo:** github.com/olusenvironmental/Compost-tracker — **prod branch `main`** (GitHub Pages auto-publishes on push; note: `main`, not `develop` like the other two systems)
+- **Stack:** single self-contained page (`compost_tracker_onedrive.html`, ~1,120 lines, no build step). Auth via MSAL.js against its **own** app registration `cdfb14bf-...`; data is one JSON file on a SharePoint site drive via Microsoft Graph (the code calls it "OneDrive" — it is a SharePoint drive).
+- **Covers:** lifecycle of 8 compost bays (A–H) — fill → mature → turn → post-turn → empty — with an event log and CSV/JSON export. Phone/tablet-friendly for yard use.
+- **Status (23 Sep 2026):** Live and **holds real production data in daily use** — do **not** batch-fix on a general go-ahead; weigh each change against bays mid-cycle first (see status note below).
+- Full detail below and in `git log`.
+
 Living source-of-truth documentation for this system, part of the Olus Management System consolidation project. Read this first at the start of any session touching this repo; update it after any material change.
 
 Repo: `olusenvironmental/Compost-tracker` (public). Single file: `compost_tracker_onedrive.html` (~1,120 lines — markup, CSS and JS all in one page). No build step, no backend of its own — it talks directly to Microsoft Graph from the browser.
