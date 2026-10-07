@@ -785,7 +785,7 @@ function canUndo(l){
   const ids=entryBayIds(l); const pos=data.log.indexOf(l);
   for(let i=0;i<pos;i++){
     const n=data.log[i]; if(n.type==='undo'||n.undone) continue;
-    if(!n.before) continue;
+    if(!n.before){ if(n.bayId&&ids.includes(n.bayId)) return false; continue; } // made by an older open copy of the page
     if(entryBayIds(n).some(id=>ids.includes(id))) return false;
   }
   return true;
