@@ -76,6 +76,13 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);min-height:1
 .btn-purple{background:#ede9fe;color:#3730a3;border-color:#c4b5fd;}.btn-purple:hover{background:#ddd6fe;}
 .btn-red{color:#b91c1c;border-color:#fca5a5;}.btn-red:hover{background:#fee2e2;}
 .btn-sm{padding:5px 10px;font-size:12px;}
+.btn-correct{margin-left:auto;color:var(--text2);border-style:dashed;}
+.log-notes{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+.log-by{display:block;font-size:11px;color:var(--text3);margin-top:2px;}
+.log-undone-tag{display:block;font-size:11px;color:#b45309;margin-top:2px;font-weight:600;}
+.log-undone .log-text{text-decoration:line-through;}
+.log-undone td{opacity:.75;}
+.log-undo{flex-shrink:0;}
 .btn-confirm{background:var(--grass-tint);color:var(--grass-strong);border-color:#a7dcbb;font-weight:600;}.btn-confirm:hover{background:#d3ecdd;}
 
 /* ── Metrics ── */
@@ -313,6 +320,8 @@ select.flt{font-size:12px;padding:5px 8px;border:1px solid var(--border2);border
           <option value="empty-done">Empty completed</option>
           <option value="added">Bay added</option>
           <option value="removed">Bay removed</option>
+          <option value="corrected">Corrected</option>
+          <option value="undo">Undo</option>
         </select>
       </div>
       <div class="tbl-toolbar">
@@ -744,8 +753,141 @@ const STATUS_COLOR={
 };
 
 // ── Logging ──
+const LOG_LABEL={'fill-start':'Fill started','fill-done':'Fill complete','turn-start':'Turn started','turn-done':'Turn complete','empty-start':'Empty started','empty-done':'Empty complete','added':'Bay added','removed':'Bay removed','corrected':'Corrected','undo':'Undo'};
 function addLog(bayId,bayName,type,notes=''){
-  data.log.unshift({id:'l'+Date.now(),date:today(),bayId,bayName,type,notes});
+  const e={id:'l'+Date.now(),date:today(),bayId,bayName,type,notes};
+  if(_pendingSnap){ e.before=_pendingSnap; _pendingSnap=null; }
+  const who=userLabel(); if(who) e.by=who;
+  data.log.unshift(e);
+}
+
+// ── Undo / correction support (7 Oct 2026) ──
+// Before an action changes anything, snap() keeps a copy of every bay it
+// touches. The log entry carries that copy ("before"), so a manager can put
+// those bays back exactly. Entries made before this existed have no copy and
+// can only be fixed with "Correct bay".
+const MANAGERS=['gareth@olus.co.uk','james@olus.co.uk','dave@olus.co.uk'];
+let _pendingSnap=null;
+function userEmail(){ return (currentAccount&&currentAccount.username||'').toLowerCase(); }
+function userLabel(){ return currentAccount?(currentAccount.name||currentAccount.username||''):''; }
+function isManager(){ return MANAGERS.includes(userEmail()); }
+function snap(ids){
+  _pendingSnap=[...new Set(ids.filter(Boolean))].map(id=>{
+    const idx=data.bays.findIndex(b=>b.id===id);
+    return {id,idx,bay:idx<0?null:JSON.parse(JSON.stringify(data.bays[idx]))};
+  });
+}
+function entryBayIds(l){ return (l.before||[]).map(x=>x.id); }
+// Undo is allowed only on the newest live action for its bays: nothing later
+// (other than an undo, or an action that was itself undone) touches them.
+function canUndo(l){
+  if(!isManager()||!l.before||l.undone||l.type==='undo') return false;
+  const ids=entryBayIds(l); const pos=data.log.indexOf(l);
+  for(let i=0;i<pos;i++){
+    const n=data.log[i]; if(n.type==='undo'||n.undone) continue;
+    if(!n.before){ if(n.bayId&&ids.includes(n.bayId)) return false; continue; } // made by an older open copy of the page
+    if(entryBayIds(n).some(id=>ids.includes(id))) return false;
+  }
+  return true;
+}
+function openUndo(logId){
+  const l=data.log.find(x=>x.id===logId); if(!l||!canUndo(l)) return;
+  const names=(l.before||[]).map(x=>x.bay?x.bay.name:(data.bays.find(b=>b.id===x.id)||{}).name).filter(Boolean).join(' and ');
+  showModal(`<h2>Undo this action?</h2>
+    <p style="font-size:13px;color:var(--text2);margin-bottom:10px;"><strong>${escHtml(LOG_LABEL[l.type]||l.type)}</strong> — ${escHtml(l.bayName||'')}, ${fmtDate(l.date)}${l.notes?' — '+escHtml(l.notes):''}</p>
+    <p style="font-size:13px;color:var(--text2);margin-bottom:14px;">${escHtml(names||'The bay')} will be put back exactly as it was before this action. The entry stays in the log marked as undone.</p>
+    <div class="modal-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-red" onclick="confirmUndo('${l.id}')">Undo</button></div>`);
+}
+function confirmUndo(logId){
+  const l=data.log.find(x=>x.id===logId); if(!l||!canUndo(l)) { closeModal(); return; }
+  // Restore in original order so re-inserted bays land where they were.
+  [...l.before].sort((a,b)=>a.idx-b.idx).forEach(x=>{
+    const cur=data.bays.findIndex(b=>b.id===x.id);
+    if(!x.bay){ if(cur>=0) data.bays.splice(cur,1); return; }
+    const copy=JSON.parse(JSON.stringify(x.bay));
+    if(cur>=0) data.bays[cur]=copy;
+    else data.bays.splice(Math.min(Math.max(x.idx,0),data.bays.length),0,copy);
+  });
+  l.undone={by:userLabel(),date:today()};
+  _pendingSnap=null;
+  addLog(l.bayId||'',l.bayName||'','undo',`Undid "${LOG_LABEL[l.type]||l.type}" from ${fmtDate(l.date)}`);
+  save();closeModal();renderAll();
+}
+
+// ── Correct bay (managers) ──
+function openCorrect(bayId){
+  if(!isManager()) return;
+  const b=data.bays.find(x=>x.id===bayId); if(!b) return;
+  const ip=b.inProgress&&b.inProgress.type;
+  if(ip==='turning'||ip==='turning-dest'){
+    showModal(`<h2>Bay ${escHtml(b.name)} is part of a turn in progress</h2><p style="font-size:13px;color:var(--text2);margin:10px 0;">Undo the turn from the Activity log, or finish it, before correcting this bay.</p><div class="modal-actions"><button class="btn btn-dark" onclick="closeModal()">OK</button></div>`);
+    return;
+  }
+  const s=getStatus(b);
+  const stage=s==='empty'?'empty':s==='filling'?'filling':(b.turnedDate&&b.turnedComplete)?'post-turn':'maturing';
+  const empties=data.bays.filter(x=>x.id!==b.id&&!x.filledDate&&!x.inProgress);
+  const hasContents=!!b.filledDate;
+  showModal(`<h2>Correct bay ${escHtml(b.name)}</h2>
+    <p style="font-size:13px;color:var(--text2);margin-bottom:14px;">For fixing mistakes. The change and your reason are recorded in the Activity log and can be undone.</p>
+    ${hasContents&&empties.length?`<div class="fg"><label>Move contents to another bay (wrong bay was used)</label><select id="c-move" onchange="corrToggle()"><option value="">No — edit this bay below</option>${empties.map(x=>`<option value="${x.id}">${escHtml(x.name)}</option>`).join('')}</select></div>`:''}
+    <div id="c-fields">
+      <div class="fg"><label>Stage</label><select id="c-stage" onchange="corrToggle()">
+        <option value="empty"${stage==='empty'?' selected':''}>Empty</option>
+        <option value="filling"${stage==='filling'?' selected':''}>Being filled</option>
+        <option value="maturing"${stage==='maturing'?' selected':''}>Filled, maturing (not yet turned)</option>
+        <option value="post-turn"${stage==='post-turn'?' selected':''}>Turned, post-turn</option>
+      </select></div>
+      <div class="fg" id="c-fill-row"><label>Fill date</label><input id="c-fill" type="date" max="${today()}" value="${b.filledDate||''}"/></div>
+      <div class="fg" id="c-turn-row"><label>Turn date</label><input id="c-turn" type="date" max="${today()}" value="${b.turnedDate||''}"/></div>
+      <div class="fg" id="c-batch-row"><label>Batch number</label><input id="c-batch" type="text" value="${escHtml(b.batchNumber||'')}"/></div>
+    </div>
+    <div class="fg"><label>Reason (required)</label><input id="c-reason" type="text" placeholder="e.g. turn went into Bay H, not Bay D"/></div>
+    <div class="modal-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-dark" onclick="confirmCorrect('${b.id}')">Save correction</button></div>`);
+  corrToggle();
+}
+function corrToggle(){
+  const mv=(document.getElementById('c-move')||{}).value||'';
+  const st=document.getElementById('c-stage').value;
+  document.getElementById('c-fields').style.display=mv?'none':'';
+  document.getElementById('c-fill-row').style.display=st==='empty'?'none':'';
+  document.getElementById('c-batch-row').style.display=st==='empty'?'none':'';
+  document.getElementById('c-turn-row').style.display=st==='post-turn'?'':'none';
+}
+function confirmCorrect(bayId){
+  if(!isManager()) return;
+  const b=data.bays.find(x=>x.id===bayId); if(!b) return;
+  const reason=(document.getElementById('c-reason').value||'').trim();
+  if(!reason){ alert('Please give a reason for the correction.'); return; }
+  const mv=(document.getElementById('c-move')||{}).value||'';
+  if(mv){
+    const to=data.bays.find(x=>x.id===mv);
+    if(!to||to.filledDate||to.inProgress){ alert('That bay is no longer empty.'); return; }
+    snap([b.id,to.id]);
+    ['filledDate','filledComplete','turnedDate','turnedComplete','notes','batchNumber','inProgress'].forEach(k=>{to[k]=b[k]??null;});
+    b.filledDate=null;b.filledComplete=false;b.turnedDate=null;b.turnedComplete=false;b.notes='';b.inProgress=null;b.batchNumber='';
+    addLog(to.id,to.name,'corrected',`Contents moved from ${b.name} to ${to.name} — ${reason}`);
+    save();closeModal();renderAll();return;
+  }
+  const st=document.getElementById('c-stage').value;
+  const fill=document.getElementById('c-fill').value, turn=document.getElementById('c-turn').value;
+  const batch=(document.getElementById('c-batch').value||'').trim();
+  const t=today();
+  if(st!=='empty'&&!fill){ alert('Please enter the fill date.'); return; }
+  if(st==='post-turn'&&!turn){ alert('Please enter the turn date.'); return; }
+  if((fill&&fill>t)||(turn&&turn>t)){ alert('Dates cannot be in the future.'); return; }
+  if(st==='post-turn'&&turn<fill){ alert('The turn date is before the fill date — please check.'); return; }
+  snap([b.id]);
+  if(st==='empty'){
+    b.filledDate=null;b.filledComplete=false;b.turnedDate=null;b.turnedComplete=false;b.notes='';b.inProgress=null;b.batchNumber='';
+  } else {
+    b.filledDate=fill; b.batchNumber=batch;
+    b.filledComplete=st!=='filling';
+    b.inProgress=st==='filling'?{type:'filling',since:fill,notes:b.notes||''}:null;
+    b.turnedDate=st==='post-turn'?turn:null; b.turnedComplete=st==='post-turn';
+  }
+  const desc=st==='empty'?'Set to empty':`Set to ${({filling:'being filled',maturing:'maturing','post-turn':'post-turn'})[st]} — filled ${fmtDate(fill)}${st==='post-turn'?', turned '+fmtDate(turn):''}${batch?', batch '+batch:''}`;
+  addLog(b.id,b.name,'corrected',`${desc} — ${reason}`);
+  save();closeModal();renderAll();
 }
 
 // ── Navigation ──
@@ -777,17 +919,19 @@ function openAddBay(){
   setTimeout(()=>{const e=document.getElementById('m-name');if(e){e.focus();e.select();}},80);
 }
 function confirmAddBay(){
+  _pendingSnap=null;
   const name=(document.getElementById('m-name').value||'').trim();
   if(!name)return;
   if(data.bays.some(b=>(b.name||'').trim().toLowerCase()===name.toLowerCase())){ alert('A bay called "'+name+'" already exists \u2014 choose a different name.'); return; }
-  data.bays.push({id:'bay_'+Date.now(),name,filledDate:null,filledComplete:false,turnedDate:null,turnedComplete:false,emptyStartDate:null,emptyComplete:false,notes:'',inProgress:null});
-  addLog('',name,'added','Bay created');
+  const newId='bay_'+Date.now(); snap([newId]);
+  data.bays.push({id:newId,name,filledDate:null,filledComplete:false,turnedDate:null,turnedComplete:false,emptyStartDate:null,emptyComplete:false,notes:'',inProgress:null});
+  addLog(newId,name,'added','Bay created');
   save();closeModal();renderAll();
 }
 
 // ── START FILLING ──
 function startFill(bayId){
-  var nextBatch = 'B' + String(data.log.filter(function(l){return l.type==='fill-start';}).length + 1).padStart(3,'0');
+  var nextBatch = 'B' + String(data.log.filter(function(l){return l.type==='fill-start'&&!l.undone;}).length + 1).padStart(3,'0');
   showModal(`<h2>Start filling bay</h2>
     <p style="font-size:13px;color:var(--text2);margin-bottom:14px;">Log when filling begins. Confirm completion when the bay is full.</p>
     <div class="fg"><label>Batch number</label><input id="m-batch" type="text" value="${nextBatch}" placeholder="e.g. B001"/></div>
@@ -796,7 +940,7 @@ function startFill(bayId){
     <div class="modal-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-blue" onclick="confirmStartFill('${bayId}')">Start filling</button></div>`);
 }
 function confirmStartFill(bayId){
-  const b=data.bays.find(x=>x.id===bayId);
+  const b=data.bays.find(x=>x.id===bayId); snap([bayId]);
   const d=readValidDate(); if(!d)return;
   const n=document.getElementById('m-notes').value;
   const batch=(document.getElementById('m-batch').value||'').trim();
@@ -817,7 +961,7 @@ function completeFill(bayId){
     <div class="modal-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-confirm" onclick="confirmCompleteFill('${bayId}')">&#10003; Confirm filled</button></div>`);
 }
 function confirmCompleteFill(bayId){
-  const b=data.bays.find(x=>x.id===bayId);
+  const b=data.bays.find(x=>x.id===bayId); snap([bayId]);
   const n=document.getElementById('m-notes').value;
   b.filledComplete=true; b.inProgress=null;
   addLog(bayId,b.name,'fill-done',n||'Filling complete');
@@ -845,6 +989,7 @@ function confirmStartTurn(fromId){
   const n=document.getElementById('m-notes').value;
   const from=data.bays.find(b=>b.id===fromId);
   const to=data.bays.find(b=>b.id===targetId);
+  snap([fromId,targetId]);
   // Mark source as being-turned, store target ref
   from.inProgress={type:'turning',since:d,notes:n,targetId};
   to.inProgress={type:'turning-dest',since:d,notes:n,sourceId:fromId};
@@ -869,6 +1014,7 @@ function confirmCompleteTurn(fromId){
   const to=data.bays.find(b=>b.id===targetId);
   const d=readValidDate(from.inProgress?.since); if(!d)return;
   const n=document.getElementById('m-notes').value;
+  snap([fromId,targetId]);
   if(to){
     to.filledDate=from.filledDate; to.filledComplete=true;
     to.turnedDate=d; to.turnedComplete=true;
@@ -892,7 +1038,7 @@ function startEmpty(bayId){
     <div class="modal-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-purple" onclick="confirmStartEmpty('${bayId}')">Start emptying</button></div>`);
 }
 function confirmStartEmpty(bayId){
-  const b=data.bays.find(x=>x.id===bayId);
+  const b=data.bays.find(x=>x.id===bayId); snap([bayId]);
   const d=readValidDate(); if(!d)return;
   const n=document.getElementById('m-notes').value;
   b.inProgress={type:'emptying',since:d,notes:n};
@@ -910,7 +1056,7 @@ function completeEmpty(bayId){
     <div class="modal-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-confirm" onclick="confirmCompleteEmpty('${bayId}')">&#10003; Confirm emptied</button></div>`);
 }
 function confirmCompleteEmpty(bayId){
-  const b=data.bays.find(x=>x.id===bayId);
+  const b=data.bays.find(x=>x.id===bayId); snap([bayId]);
   const n=document.getElementById('m-notes').value;
   addLog(bayId,b.name,'empty-done',(b.batchNumber?'Batch '+b.batchNumber+' - ':'')+( n||'Bay emptied'));
   b.filledDate=null; b.filledComplete=false;
@@ -926,7 +1072,7 @@ function openDelete(bayId){
     <div class="modal-actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-red" onclick="confirmDelete('${bayId}')">Remove</button></div>`);
 }
 function confirmDelete(bayId){
-  const b=data.bays.find(x=>x.id===bayId);
+  const b=data.bays.find(x=>x.id===bayId); snap([bayId]);
   addLog(bayId,b.name,'removed','');
   data.bays=data.bays.filter(x=>x.id!==bayId);
   save();closeModal();renderAll();
@@ -1028,6 +1174,9 @@ function cardHTML(b){
   }
   if(b.inProgress?.type==='turning-dest'){
     actions=`<span style="font-size:12px;color:var(--text2)">Waiting for turn to complete…</span>`;
+  }
+  if(isManager()&&!(b.inProgress&&(b.inProgress.type==='turning'||b.inProgress.type==='turning-dest'))){
+    actions+=`<button class="btn btn-sm btn-correct" onclick="openCorrect('${b.id}')" title="Managers: fix a mistake on this bay">Correct</button>`;
   }
 
   return `<div class="card ${isWarn?'warn':''} ${isReady?'ready':''} ${isInProg?'inprog':''}">
@@ -1158,15 +1307,15 @@ function renderLog(){
     bayFlt.innerHTML='<option value="">All bays</option>'+names.map(n=>`<option value="${n}"${n===cur?' selected':''}>${n}</option>`).join('');
   }
   const logs=data.log.filter(l=>(!fb||l.bayName===fb)&&(!ft||l.type===ft));
-  const typeColor={'fill-start':'#3b82f6','fill-done':'#22c55e','turn-start':'#f59e0b','turn-done':'#16a34a','empty-start':'#8b5cf6','empty-done':'#059669','added':'#6b7280','removed':'#ef4444'};
-  const typeLabel={'fill-start':'Fill started','fill-done':'Fill complete','turn-start':'Turn started','turn-done':'Turn complete','empty-start':'Empty started','empty-done':'Empty complete','added':'Bay added','removed':'Bay removed'};
+  const typeColor={'fill-start':'#3b82f6','fill-done':'#22c55e','turn-start':'#f59e0b','turn-done':'#16a34a','empty-start':'#8b5cf6','empty-done':'#059669','added':'#6b7280','removed':'#ef4444','corrected':'#0ea5e9','undo':'#64748b'};
+  const typeLabel=LOG_LABEL;
   const tbody=document.getElementById('log-tbody');
   if(!logs.length){tbody.innerHTML=`<tr><td colspan="4" style="text-align:center;color:var(--text2);padding:1.5rem;">No events found.</td></tr>`;return;}
-  tbody.innerHTML=logs.map(l=>`<tr>
+  tbody.innerHTML=logs.map(l=>`<tr class="${l.undone?'log-undone':''}">
     <td class="mono">${fmtDate(l.date)}</td>
     <td><strong>${l.bayName||'—'}</strong></td>
     <td><span class="sdot" style="background:${typeColor[l.type]||'#9a9690'}"></span>${typeLabel[l.type]||l.type}</td>
-    <td style="color:var(--text2)">${l.notes||'—'}</td>
+    <td style="color:var(--text2)"><div class="log-notes"><span><span class="log-text">${l.notes||'—'}</span>${l.by?`<span class="log-by">${escHtml(l.by)}</span>`:''}${l.undone?`<span class="log-undone-tag">Undone by ${escHtml(l.undone.by||'?')}, ${fmtDate(l.undone.date)}</span>`:''}</span>${canUndo(l)?`<button class="btn btn-sm log-undo" onclick="openUndo('${l.id}')">Undo</button>`:''}</div></td>
   </tr>`).join('');
 }
 
@@ -1202,7 +1351,7 @@ function renderAnalysis(){
   // Throughput
   const byBay={};
   data.bays.forEach(b=>{byBay[b.name]={fills:0,empties:0,turns:0};});
-  data.log.forEach(l=>{if(!byBay[l.bayName])byBay[l.bayName]={fills:0,empties:0,turns:0};
+  data.log.forEach(l=>{if(l.undone)return;if(!byBay[l.bayName])byBay[l.bayName]={fills:0,empties:0,turns:0};
     if(l.type==='fill-done')byBay[l.bayName].fills++;
     if(l.type==='empty-done')byBay[l.bayName].empties++;
     if(l.type==='turn-done')byBay[l.bayName].turns++;});
