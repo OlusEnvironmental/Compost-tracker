@@ -433,6 +433,7 @@ function isInteractionRequired(e){
 function sessionExpired(){
   if(_sessionExpired) return;
   _sessionExpired = true;
+  if (window.SessionGuard) SessionGuard.stop();
   currentAccount = null;
   _lastETag = null;
   showSignIn();  // hide all pages + any stale cached data behind the prompt
@@ -440,10 +441,99 @@ function sessionExpired(){
     <p style="font-size:13px;color:var(--text2);margin:10px 0 20px;">Your Microsoft session has timed out. Please log back in to continue \u2014 your saved data is safe.</p>
     <div class="modal-actions"><button class="btn btn-dark" onclick="retryLogin()" style="padding:10px 28px;font-size:14px;">Log in</button></div>`);
 }
-function retryLogin(){
+function retryLogin(askPassword){
   closeModal();
   _sessionExpired = false;
-  signIn();
+  signIn(askPassword);
+}
+
+// ── Sign out after 12 hours with no activity (Gareth, 19 Oct 2026) ──
+// Same code as session-guard.js in the other Olus apps (2 h there; 12 h here
+// because the tracker is picked up a few times a day in the yard). Every
+// action is already saved (this device + SharePoint) the moment it's made, so
+// nothing is lost. Clears this app's sign-in only (the Microsoft session is
+// left alone) and asks for the password again. Browser-only check, no network.
+// session-guard.js — sign out after a period with no activity (19 Oct 2026)
+//
+// Same file in every Olus app (Maintenance, Management, Purchasing; Bay Tracker
+// inlines it). Gareth: 2 hours for the office systems, 12 hours for the Bay
+// Tracker. Activity = clicks, taps, typing, scrolling or moving the mouse in
+// this app; any open tab of the same app counts (shared via localStorage).
+// Two minutes before the limit a bar offers "Stay signed in". Purely in the
+// browser: the 15-second check makes no network or database calls.
+//
+// Usage: SessionGuard.start({ idleMs, onTimeout, appKey }) once signed in;
+//        SessionGuard.stop() when signing out or leaving the signed-in view.
+window.SessionGuard = window.SessionGuard || (() => {
+  const WARN_MS = 2 * 60 * 1000;
+  let idleMs = 2 * 60 * 60 * 1000, onTimeout = null, key = 'olus_last_activity';
+  let running = false, timer = null, last = Date.now(), lastSaved = 0, bar = null;
+
+  function saved() { try { return Number(localStorage.getItem(key)) || 0; } catch (e) { return 0; } }
+  function save(t) { try { localStorage.setItem(key, String(t)); } catch (e) {} }
+
+  function bump() {
+    if (!running) return;
+    last = Date.now();
+    if (last - lastSaved > 10000) { lastSaved = last; save(last); }   // at most every 10 s
+    if (bar) hideBar();
+  }
+  ['pointerdown', 'keydown', 'wheel', 'touchstart', 'scroll', 'mousemove', 'input'].forEach(ev =>
+    document.addEventListener(ev, bump, { passive: true, capture: true }));
+  document.addEventListener('visibilitychange', () => { if (running && !document.hidden) tick(); });
+
+  function idleFor() { return Date.now() - Math.max(last, saved()); }
+
+  function tick() {
+    if (!running) return;
+    const idle = idleFor();
+    if (idle >= idleMs) { const cb = onTimeout; stop(); if (cb) cb(); return; }
+    if (idle >= idleMs - WARN_MS) showBar(Math.max(0, idleMs - idle));
+    else if (bar) hideBar();
+  }
+
+  function showBar(msLeft) {
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.setAttribute('role', 'alert');
+      bar.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:100000;background:#153C2A;color:#fff;' +
+        'padding:12px 16px;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.25);display:flex;gap:14px;align-items:center;font:600 14px Figtree,system-ui,sans-serif;max-width:calc(100vw - 32px)';
+      bar.innerHTML = '<span data-t></span><button type="button" style="background:#81BA45;color:#153C2A;border:0;border-radius:8px;padding:8px 12px;font:700 13px inherit;cursor:pointer">Stay signed in</button>';
+      bar.querySelector('button').addEventListener('click', () => { bump(); save(Date.now()); });
+      document.body.appendChild(bar);
+    }
+    const s = Math.ceil(msLeft / 1000), m = Math.floor(s / 60);
+    bar.querySelector('[data-t]').textContent = `No activity for a while — signing out in ${m}:${String(s % 60).padStart(2, '0')}`;
+  }
+  function hideBar() { if (bar) { bar.remove(); bar = null; } }
+
+  function start(opts = {}) {
+    idleMs = opts.idleMs || idleMs;
+    onTimeout = opts.onTimeout || null;
+    if (opts.appKey) key = `olus_last_activity_${opts.appKey}`;
+    running = true; last = Date.now(); lastSaved = last; save(last);
+    clearInterval(timer); timer = setInterval(tick, 15000);
+  }
+  function stop() { running = false; clearInterval(timer); timer = null; hideBar(); }
+
+  return { start, stop, idleFor };
+})();
+
+var IDLE_MS = 12 * 60 * 60 * 1000;
+function startIdleGuard(){
+  SessionGuard.start({ idleMs: IDLE_MS, appKey: 'baytracker', onTimeout: idleSignOut });
+}
+async function idleSignOut(){
+  var who = currentAccount;
+  try { await msalInstance.logoutRedirect({ account: who, onRedirectNavigate: function(){ return false; } }); } catch(e) { /* best effort */ }
+  if (_sessionExpired) return;
+  _sessionExpired = true;
+  currentAccount = null;
+  _lastETag = null;
+  showSignIn();
+  showModal(`<h2>Signed out \u2014 no activity for 12 hours</h2>
+    <p style="font-size:13px;color:var(--text2);margin:10px 0 20px;">For security you are signed out after 12 hours without activity. Log in again to carry on \u2014 your saved data is safe.</p>
+    <div class="modal-actions"><button class="btn btn-dark" onclick="retryLogin(true)" style="padding:10px 28px;font-size:14px;">Log in</button></div>`);
 }
 
 async function ensureFolder(token) {
@@ -615,9 +705,11 @@ async function initAuth() {
   }
 }
 
-async function signIn() {
+async function signIn(askPassword) {
   try {
-    var resp = await msalInstance.loginPopup({scopes:SCOPES});
+    var req = {scopes:SCOPES};
+    if (askPassword === true) { req.prompt = 'login'; }   // after the 12-hour inactivity sign-out
+    var resp = await msalInstance.loginPopup(req);
     currentAccount = resp.account;
     await onSignedIn();
   } catch(e) {
@@ -627,6 +719,7 @@ async function signIn() {
 
 async function signOut() {
   try {
+    if (window.SessionGuard) SessionGuard.stop();
     await msalInstance.logoutPopup({account:currentAccount});
     currentAccount = null;
     data = {bays:[],log:[]};
@@ -650,6 +743,7 @@ async function onSignedIn() {
     try { localStorage.setItem(SK, JSON.stringify(data)); } catch(e) {}
   }
   showApp();
+  startIdleGuard();
 }
 
 function showSignIn() {
