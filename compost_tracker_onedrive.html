@@ -447,7 +447,7 @@ function retryLogin(askPassword){
   signIn(askPassword);
 }
 
-// ── Sign out after 12 hours with no activity (Gareth, 19 Oct 2026) ──
+// ── Sign out after a period with no activity (Gareth, 19 Oct 2026; time from Management System settings, 23 Oct) ──
 // Same code as session-guard.js in the other Olus apps (2 h there; 12 h here
 // because the tracker is picked up a few times a day in the yard). Every
 // action is already saved (this device + SharePoint) the moment it's made, so
@@ -519,8 +519,21 @@ window.SessionGuard = window.SessionGuard || (() => {
   return { start, stop, idleFor };
 })();
 
-var IDLE_MS = 12 * 60 * 60 * 1000;
-function startIdleGuard(){
+// The time is set by a Manager in Management -> System settings ("Bay Tracker")
+// and read once at sign-in (23 Oct 2026); 12 hours if it can't be read.
+var IDLE_HOURS = 12;
+var IDLE_MS = IDLE_HOURS * 60 * 60 * 1000;
+async function loadIdleHours(){
+  try {
+    var r = await fetch('https://management.olus.co.uk/api/public-settings', { cache: 'no-store' });
+    var j = r.ok ? await r.json() : null;
+    var h = j && Number(j.idleBayHours);
+    if (h >= 1 && h <= 24) { IDLE_HOURS = h; IDLE_MS = h * 60 * 60 * 1000; }
+  } catch(e) { /* keep the default */ }
+}
+function hoursText(){ return IDLE_HOURS + ' hour' + (IDLE_HOURS !== 1 ? 's' : ''); }
+async function startIdleGuard(){
+  await loadIdleHours();
   SessionGuard.start({ idleMs: IDLE_MS, appKey: 'baytracker', onTimeout: idleSignOut });
 }
 async function idleSignOut(){
@@ -531,8 +544,8 @@ async function idleSignOut(){
   currentAccount = null;
   _lastETag = null;
   showSignIn();
-  showModal(`<h2>Signed out \u2014 no activity for 12 hours</h2>
-    <p style="font-size:13px;color:var(--text2);margin:10px 0 20px;">For security you are signed out after 12 hours without activity. Log in again to carry on \u2014 your saved data is safe.</p>
+  showModal(`<h2>Signed out \u2014 no activity for ${hoursText()}</h2>
+    <p style="font-size:13px;color:var(--text2);margin:10px 0 20px;">For security you are signed out after ${hoursText()} without activity. Log in again to carry on \u2014 your saved data is safe.</p>
     <div class="modal-actions"><button class="btn btn-dark" onclick="retryLogin(true)" style="padding:10px 28px;font-size:14px;">Log in</button></div>`);
 }
 
